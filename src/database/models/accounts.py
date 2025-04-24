@@ -221,7 +221,6 @@ class RefreshTokenModel(TokenBaseModel):
         the required attributes.
         """
         expires_at = cast(datetime, TokenBaseModel.expires_at).replace(tzinfo=timezone.utc)
-        reset_token = PasswordResetTokenModel(user_id=cast(int, user.id))
 
         return cls(user_id=user_id, expires_at=expires_at, token=token)
 

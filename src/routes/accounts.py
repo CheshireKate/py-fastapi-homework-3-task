@@ -19,10 +19,10 @@ from database import (
     RefreshTokenModel
 )
 from exceptions import BaseSecurityError
-from schemas.accounts import UserCreate, Token
-from security.interfaces import JWTAuthManagerInterface
-from security.passwords import verify_password
-from security.token_manager import JWTAuthManager
+from src.schemas.accounts import UserCreate, Token
+from src.security.interfaces import JWTAuthManagerInterface
+from src.security.passwords import verify_password, hash_password
+from src.security.token_manager import JWTAuthManager
 from dotenv import load_dotenv
 import os
 
@@ -36,21 +36,16 @@ secret_key_refresh = os.getenv("SECRET_KEY_REFRESH")
 algorithm = os.getenv("JWT_SIGNING_ALGORITHM")
 
 
-@router.post("/acrivate", response_model=ActivationTokenModel)
-async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
-    jwt_auth_manager = JWTAuthManager(
-        _secret_key_access=secret_key_access,
-        _secret_key_refresh=secret_key_refresh,
-        _algorithm=algorithm,
-    )
+@router.post("/activate", response_model=str,)
+async def activate(user: UserCreate,
+                   jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+                   db: AsyncSession = Depends(get_db)):
 
     token_expires = timedelta(minutes=15)
-    activation_token = jwt_auth_manager._create_token(
+    activation_token = jwt_manager.create_access_token(
         data={"sub": user.email},
         expires_delta=token_expires
     )
-
-    jwt_auth_manager.verify_access_token_or_raise(activation_token)
 
     try:
         return "User account activated successfully."
@@ -69,48 +64,39 @@ async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail="An error occurred during user creation.")
 
 
-@router.post("/password-reset/request/", response_model=PasswordResetTokenModel)
-async def reset_password_request(email: str, password: str, db: AsyncSession = Depends(get_db)):
+@router.post("/password-reset/request/", response_model=str)
+async def reset_password_request(email: str,
+                                 password: str,
+                                 db: AsyncSession = Depends(get_db),
+                                 jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),):
     db_user = await get_user_by_email(db, email)
     if not db_user or not verify_password(password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    db_user.activation_token.delete()
-    jwt_auth_manager = JWTAuthManager(
-        _secret_key_access=secret_key_access,
-        _secret_key_refresh=secret_key_refresh,
-        _algorithm=algorithm,
-    )
 
     token_expires = timedelta(minutes=15)
-    activation_token = jwt_auth_manager._create_token(
+    activation_token = jwt_manager.create_access_token(
         data={"sub": email},
         expires_delta=token_expires
     )
 
-    jwt_auth_manager.verify_access_token_or_raise(activation_token)
-    db.user.password_reset_token = activation_token
+    db_user.password_reset_token = activation_token
     try:
         return "If you are registered, you will receive an email with instructions."
     except Exception:
         raise HTTPException(status_code=500)
 
 
-@router.post("/password-reset/complete/", response_model=PasswordResetTokenModel)
+@router.post("/password-reset/complete/", response_model=str)
 async def reset_password_complete(email: str,
                                 token: str,
                                 password: str,
+                                jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
                                 db: AsyncSession = Depends(get_db)):
     db_user = await get_user_by_email(db, email)
     if not db_user or not verify_password(password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    jwt_auth_manager = JWTAuthManager(
-        _secret_key_access=secret_key_access,
-        _secret_key_refresh=secret_key_refresh,
-        _algorithm=algorithm,
-    )
-    jwt_auth_manager.verify_access_token_or_raise(token)
-    db_user._hashed_password.delete()
-    db_user.password(password)
+    jwt_manager.verify_access_token_or_raise(token)
+    db_user.password = hash_password(password)
 
     try:
         return "If you are registered, you will receive an email with instructions."
@@ -118,7 +104,7 @@ async def reset_password_complete(email: str,
         raise HTTPException(status_code=500, detail="An error occurred while resetting the password.")
 
 
-@router.post("/login", response_model=RefreshTokenModel)
+@router.post("/login", response_model=dict)
 async def login(email: str,
                 password: str,
                 db: AsyncSession = Depends(get_db),
@@ -127,7 +113,7 @@ async def login(email: str,
     if not db_user or not verify_password(password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     access_token_expires = timedelta(minutes=15)
-    access_token = JWTAuthManager.create_access_token(
+    access_token = jwt_manager.create_access_token(
         data={"sub": db_user.email}, expires_delta=access_token_expires
     )
     token_expires = timedelta(minutes=15)
@@ -139,7 +125,7 @@ async def login(email: str,
         raise HTTPException(status_code=500, detail="An error occurred while processing the request.")
 
 
-@router.post("/api/v1/accounts/refresh/", response_model=RefreshTokenModel)
+@router.post("/api/v1/accounts/refresh/", response_model=Token)
 async def access_token_refresh(email: str,
                 refresh_token: str,
                 password: str,
